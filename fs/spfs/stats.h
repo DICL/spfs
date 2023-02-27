@@ -69,6 +69,30 @@ extern int spfs_seq_logging_count_show(struct seq_file *seq, void *v);
 #define stats_log_replace()	percpu_counter_add(&stats_replace_counter, 1)
 #define stats_log_cow()		percpu_counter_add(&stats_cow_counter, 1)
 
+extern int spfs_seq_demotion_show(struct seq_file *seq, void *v);
+extern struct percpu_counter stats_succ_on_demoted;
+extern struct percpu_counter stats_succ_amounts_on_demoted;
+extern struct percpu_counter stats_susp_on_demoted;
+extern struct percpu_counter stats_susp_amounts_on_demoted;
+extern struct percpu_counter stats_full_mapped_on_demoted;
+extern struct percpu_counter stats_partial_mapped_on_demoted;
+extern struct percpu_counter stats_nothing_mapped_on_demoted;
+
+#define stats_inc_succ_on_demoted()					\
+	percpu_counter_add(&stats_succ_on_demoted, 1)
+#define stats_inc_succ_amounts_on_demoted(nr)				\
+	percpu_counter_add(&stats_succ_amounts_on_demoted, nr)
+#define stats_inc_susp_on_demoted()					\
+	percpu_counter_add(&stats_susp_on_demoted, 1)
+#define stats_inc_susp_amounts_on_demoted(nr)				\
+	percpu_counter_add(&stats_susp_amounts_on_demoted, nr)
+#define stats_inc_full_mapped_on_demoted()				\
+	percpu_counter_add(&stats_full_mapped_on_demoted, 1)
+#define stats_inc_partial_mapped_on_demoted()				\
+	percpu_counter_add(&stats_partial_mapped_on_demoted, 1)
+#define stats_inc_nothing_mapped_on_demoted()				\
+	percpu_counter_add(&stats_nothing_mapped_on_demoted, 1)
+
 #else
 #define stats_inc_prealloc_usage()			do {} while (0)
 #define stats_inc_extent_count()			do {} while (0)
@@ -84,6 +108,14 @@ extern int spfs_seq_logging_count_show(struct seq_file *seq, void *v);
 #define stats_log_undo()				do {} while (0)
 #define stats_log_replace()				do {} while (0)
 #define stats_log_cow()					do {} while (0)
+
+#define stats_inc_succ_on_demoted()			do {} while (0)
+#define stats_inc_succ_amounts_on_demoted(nr)		do {} while (0)
+#define stats_inc_susp_on_demoted()			do {} while (0)
+#define stats_inc_susp_amounts_on_demoted(nr)		do {} while (0)
+#define stats_inc_full_mapped_on_demoted()		do {} while (0)
+#define stats_inc_partial_mapped_on_demoted()		do {} while (0)
+#define stats_inc_nothing_mapped_on_demoted()		do {} while (0)
 
 #endif
 

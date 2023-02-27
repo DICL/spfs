@@ -17,7 +17,7 @@ static int spfs_inode_set_bp(struct inode *inode, void *data)
 	struct inode *lower_inode = data;
 
 	spfs_set_inode_lower(inode, lower_inode);
-
+	
 	fsstack_copy_attr_all(inode, lower_inode);
 	fsstack_copy_inode_size(inode, lower_inode);
 
@@ -39,15 +39,6 @@ static int spfs_inode_set_bp(struct inode *inode, void *data)
 	else
 		inode->i_fop = &spfs_main_fops;
 
-	/* TODO: use own slub */
-	I_INFO(inode)->i_profiler = kzalloc(sizeof(struct spfs_profiler),
-			GFP_ATOMIC);
-	if (!I_PROFILER(inode))
-		return -ENOMEM;
-	spin_lock_init(&I_PROFILER(inode)->lock);
-#ifdef CONFIG_SPFS_BW_PROFILER
-	I_PROFILER(inode)->created_when = jiffies;
-#endif
 	return 0;
 }
 

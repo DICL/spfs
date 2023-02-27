@@ -162,6 +162,8 @@ group_cnt_done:
 #ifdef SPFS_SMALL_BLOCK
 	BUG_ON(!info->hash);
 #endif
+	info->cur_usage_perc = 0;
+	info->num_already_full = 0;	
 	for (i = 0; i < info->groups; i++) {
 		ret = spfs_init_group_clusters(info, info->gfi[i]);
 		if (ret) {
@@ -169,6 +171,8 @@ group_cnt_done:
 					__func__);
 			goto out;
 		}
+		if (!GFI_FREE(info->gfi[i]))
+			info->num_already_full++;
 	}
 
 	spfs_show_groups(info);

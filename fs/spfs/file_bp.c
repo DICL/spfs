@@ -3,7 +3,7 @@
 #include "inode.h"
 
 
-static struct kmem_cache *spfs_file_info_cachep;
+struct kmem_cache *spfs_file_info_cachep;
 
 ssize_t spfs_read_iter_bp(struct kiocb *iocb, struct iov_iter *i)
 {

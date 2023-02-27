@@ -220,7 +220,7 @@ static unsigned int spfs_map_migrated_extent(struct inode *inode,
 
 	ijnl_t1(inode, WR_INC_CLU, map->ei->len);
 	spfs_inode_inc_clusters(inode, map->ei->len);
-
+	
 	return n_alloc;
 
 out:
@@ -322,7 +322,8 @@ carve:
 
 	/* TODO: carve again!! */
 	if (n_alloc != MAP_LEN(map)) {
-		pr_err("%s: %u %u %u %u", __func__, map->lcn, map->len, map->pa_len, n_alloc);
+		spfs_debug(sbi->s_sb, "%s: %u %u %u %u", __func__, map->lcn, 
+				map->len, map->pa_len, n_alloc);
 
 		if (n_alloc <= map->len)
 			map->len = n_alloc;

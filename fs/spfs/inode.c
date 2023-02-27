@@ -25,7 +25,7 @@ void spfs_inode_dec_clusters(struct inode *inode, spfs_cluster_t count)
 	__inode_sub_bytes(inode, count << CLUSTER_SHIFT);
 }
 
-int spfs_truncate(struct inode *inode)
+int spfs_truncate(struct inode *inode, bool by_demotion)
 {
 	spfs_cluster_t last_cluster;
 
@@ -36,7 +36,8 @@ int spfs_truncate(struct inode *inode)
 	if (!(S_ISREG(inode->i_mode) || S_ISDIR(inode->i_mode)))
 		return 0;
 
-	last_cluster = (inode->i_size + CLUSTER_SIZE - 1) >> CLUSTER_SHIFT;
+	last_cluster = (by_demotion ? 0 : inode->i_size + CLUSTER_SIZE - 1) 
+		>> CLUSTER_SHIFT;
 
 	return spfs_extent_truncate(inode, last_cluster, (spfs_cluster_t) -1);
 }
@@ -164,7 +165,7 @@ static int spfs_setattr(struct dentry *dentry, struct iattr *attr)
 
 			i_size_write(inode, attr->ia_size);
 
-			spfs_truncate(inode);
+			spfs_truncate(inode, false);
 			spfs_truncate_extent_info(inode, BYTES2C(inode->i_size +
 						CLUSTER_SIZE - 1));
 		} else if (attr->ia_size > inode->i_size) {

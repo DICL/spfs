@@ -4,7 +4,6 @@
 #include <linux/xattr.h>
 
 #include "spfs.h"
-#include "inode.h"
 #include "stats.h"
 
 //#define PROF_DEBUG
@@ -234,6 +233,17 @@ static inline bool __spfs_profile_fsync(struct file *file, struct inode *inode,
 }
 #endif
 
+static inline bool __spfs_profile_fsync2(struct file *file, struct inode *inode,
+		struct spfs_profiler *prof)
+{
+	if (!spfs_prof_fsync_interval(file) ||
+			!spfs_prof_written_fsync_bytes(file)) {
+		return false;
+	}
+
+	return true;
+}
+
 static inline int spfs_profile_fsync(struct file *file, bool from_fsync)
 {
 	struct inode *inode = file_inode(file);
@@ -275,6 +285,24 @@ lock:
 		goto out;
 
 	if (__spfs_profile_fsync(file, inode, prof, opts))
+		ret++;
+out:
+	spin_unlock(&prof->lock);
+	return ret;
+}
+
+static inline int spfs_profile_fsync2(struct file *file)
+{
+	struct inode *inode = file_inode(file);
+	struct spfs_profiler *prof = I_PROFILER(inode);
+	int ret = 0;
+
+	spin_lock(&prof->lock);
+
+	if (is_inode_flag_set(inode, INODE_NEED_TIERING))
+		goto out;
+
+	if (__spfs_profile_fsync2(file, inode, prof))
 		ret++;
 out:
 	spin_unlock(&prof->lock);
@@ -410,4 +438,45 @@ out:
 }
 #endif
 
-#endif
+/* XXX: hard coded sync factor value... */	
+enum sync_factor_config {
+	SF_SCALE 	= 4 * (1 << 20), // XXX: same as small write
+	//SF_SMOOTH_PERC	= 5, // XXX: option
+	/* 
+	 * let bins: [0] [1] ... [9] [10] 
+	 * ex: bin [1] covers 100 <= x < 200
+	 * each bin covers range(i-1) <= x < range(i)
+	 * SF_MAX(SF_SCALE) goes to the last bin, so we +1 for total bins 
+	 */
+	SF_BIN_RANGE 	= 4 * (1 << 10),
+	SF_NUM_BINS 	= SF_SCALE / SF_BIN_RANGE + 1,
+	
+	SF_HARD_LIMIT  	= SF_SCALE / (SF_NUM_BINS - 1), /* smallest bin */
+};
+
+#define SF_ALP(perc) (SF_SCALE * perc / 100)
+
+static inline unsigned int spfs_calc_sync_factor(struct spfs_sb_info * sbi, 
+		unsigned int old, unsigned int value)
+{
+	int alp_perc = S_OPTION(sbi)->sf_alp_perc;
+	return (SF_ALP(alp_perc) * value + 
+			(1UL * SF_SCALE - SF_ALP(alp_perc)) * old) / SF_SCALE;
+}
+
+static inline unsigned int spfs_calc_sf_rd_thld(struct spfs_sb_info *sbi)
+{
+	unsigned int value = SF_SCALE;
+	unsigned int cnt = 0;
+	
+	while (1) {
+		cnt++;
+		value = spfs_calc_sync_factor(sbi, value, 0);
+		if (value <= 0)
+			break;
+	}
+
+	return cnt;
+}
+
+#endif /* __PROFILER_H__ */

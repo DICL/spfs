@@ -6,7 +6,7 @@
 #include "spfs.h"
 #include "cceh.h"
 #include "journal.h"
-
+#include "profiler.h"
 
 #define IS_PM_INODE(inode)		is_inode_flag_set(inode, INODE_PM)
 #define IS_TIERED_INODE(inode)		is_inode_flag_set(inode, INODE_TIERED)
@@ -148,7 +148,7 @@ static inline struct spfs_inode *__spfs_init_new_inode(struct inode *inode,
 {
 	struct spfs_sb_info *sbi = SB_INFO(inode->i_sb);
 	struct spfs_inode *p_inode = blk_addr(sbi, iblk);
-
+	
 	init_blist_head(sbi, &p_inode->i_list);
 	p_inode->i_uid = cpu_to_le32(i_uid_read(inode));
 	p_inode->i_gid = cpu_to_le32(i_gid_read(inode));
@@ -162,6 +162,8 @@ static inline struct spfs_inode *__spfs_init_new_inode(struct inode *inode,
 	SPFS_INODE_SET_TIME(i_atime, inode, p_inode);
 	SPFS_INODE_SET_TIME(i_mtime, inode, p_inode);
 	SPFS_INODE_SET_TIME(i_ctime, inode, p_inode);
+    
+	p_inode->i_sync_factor = SF_SCALE;
 
 	__ijournal_init(p_inode);
 
@@ -217,4 +219,56 @@ static inline int spfs_inode_update_time(struct inode *inode, int flags)
 	return 0;
 }
 
-#endif
+static inline void __spfs_inode_update_sync_factor(struct inode *inode, 
+		unsigned int value) 
+{
+	struct spfs_inode *raw_inode = I_RAW(inode);
+	unsigned int old, cur;
+
+	old = raw_inode->i_sync_factor;
+	cur = spfs_calc_sync_factor(SB_INFO(inode->i_sb), old, value);
+	raw_inode->i_sync_factor = cur;
+
+	spfs_persist(&raw_inode->i_sync_factor, 
+			sizeof(raw_inode->i_sync_factor));
+}
+
+static inline void spfs_inode_fast_update_sync_factor(struct inode *inode, 
+		unsigned int sync_factor) 
+{
+	struct spfs_inode *raw_inode = I_RAW(inode);
+	
+	raw_inode->i_sync_factor = sync_factor;
+	spfs_persist(&raw_inode->i_sync_factor, 
+			sizeof(raw_inode->i_sync_factor));
+}
+
+static inline void spfs_inode_update_sync_factor(struct inode *inode, 
+		unsigned int value) 
+{
+	int delayed_rd_cnt = 0;
+	
+	if (!S_OPTION(SB_INFO(inode->i_sb))->demotion)
+		return;
+	/* 
+	 * For reads, to avoid blocking, sync factor updates are deferred 
+	 * to subsequent write
+	 */	
+	delayed_rd_cnt = atomic_read(&I_INFO(inode)->sf_rd_cnt);
+  
+	if (delayed_rd_cnt > 0) {
+		atomic_set(&I_INFO(inode)->sf_rd_cnt, 0);
+
+		if (delayed_rd_cnt >= SB_INFO(inode->i_sb)->sf_rd_thld) {
+			spfs_inode_fast_update_sync_factor(inode, 0);
+		} else {
+			while (delayed_rd_cnt-- > 0) {
+				__spfs_inode_update_sync_factor(inode, 0);
+			}
+		}
+	}
+
+	__spfs_inode_update_sync_factor(inode, value);
+}
+
+#endif // __INODE_H__

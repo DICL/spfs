@@ -3,6 +3,7 @@
 
 #include "spfs.h"
 
+#include <linux/delay.h>
 
 #define MIN_CLUSTER_GROUP_BITMAP_BLOCKS	(4)	/* 512MB */
 
@@ -61,6 +62,9 @@ struct spfs_free_info {
 	struct spfs_cceh_info		*hash;
 #endif
 	spfs_gfi_t			**gfi;
+
+	int 				cur_usage_perc;
+	int				num_already_full;
 };
 
 #define FREE_INFO(sbi)	((struct spfs_free_info *) (sbi)->s_free_info)
@@ -79,7 +83,22 @@ enum { GFI_CPU, GFI_RESCUE, GFI_BRUTE_FORCE };
 #define GFI(info, i)		((info)->gfi[i])
 
 #define CPU_GFI(info)		GFI((info), smp_processor_id() % (info)->cpus)
-#define RANDOM_GFI(info)	GFI((info), jiffies % (info)->cpus)
+static inline int __RANDOM_GFI_IDX(struct spfs_free_info *info)
+{
+       int idx = jiffies % info->cpus;
+
+       if (!info->num_already_full) {
+               return idx;
+       } else {
+               if (idx < info->num_already_full) 
+		       return jiffies % (info->cpus - info->num_already_full) + 
+			       info->num_already_full;
+               else
+                       return idx;
+       }
+}
+#define RANDOM_GFI(info)        GFI(info, __RANDOM_GFI_IDX(info))
+//#define RANDOM_GFI(info)	GFI((info), jiffies % (info)->cpus)
 #define RESCUE_GFI(info)	GFI((info), (info)->groups - 1)
 
 #define PCN2GRP(info, pcn)	(MIN((pcn) / (info)->cpc, (info)->groups - 1))
@@ -108,6 +127,26 @@ enum { GFI_CPU, GFI_RESCUE, GFI_BRUTE_FORCE };
 /* GFI offset to PCN */
 #define GO2P(gfi, offset)	(GFI_START((gfi)) + offset)
 
+enum usage_watermark_t {
+	USAGE_WM_HIGH 		= 80,
+	USAGE_WM_QUITE_HIGH 	= 90,
+	USAGE_WM_VERY_HIGH 	= 95,
+};
+
+static inline bool spfs_is_usage_high(struct spfs_free_info *info)
+{
+	return info->cur_usage_perc > USAGE_WM_HIGH;
+}
+
+static inline bool spfs_is_usage_quite_high(struct spfs_free_info *info)
+{
+	return info->cur_usage_perc > USAGE_WM_QUITE_HIGH;
+}
+
+static inline bool spfs_is_usage_very_high(struct spfs_free_info *info)
+{
+	return info->cur_usage_perc > USAGE_WM_VERY_HIGH;
+}
 
 static inline void spfs_set_clusters_durable(struct spfs_sb_info *sbi,
 		spfs_cluster_t start, unsigned int len, bool set)
@@ -264,8 +303,9 @@ __spfs_alloc_clusters_volatile(struct spfs_sb_info *sbi, spfs_cluster_t *cnt,
 	int phase = -1; /* 0: random, 1: rescue */
 	int i;
 	bool no_gfi = S_OPTION(sbi)->no_gfi;
-
-	*cnt = MIN(*cnt, info->cpc / 2);
+	
+	if (!contiguous)
+		*cnt = MIN(*cnt, info->cpc / 2);
 again:
 	*errp = 0;
 
@@ -274,16 +314,29 @@ again:
 		goto group_done;
 	}
 
-	phase++;
+	if (S_OPTION(sbi)->demotion) {
+		if (phase < 2) /* final phase is 2 */
+			phase++; 
+		/* XXX: what is optimal waiting time? */
+		if (spfs_is_usage_quite_high(info))
+			usleep_range(500, 1000);
+		if (spfs_is_usage_very_high(info))
+			msleep(5);
+	} else { 
+		phase++; /* may be failed to allocate */
+	}
+
 	if (phase == 0)
 		gfi = RANDOM_GFI(info);
 	else if (phase == 1)
 		gfi = RESCUE_GFI(info);
 	else if (phase == 2) {
 		bool found = false;
-
-		for (i = 0; i < info->groups; i++) {
-			gfi = info->gfi[i];
+		int idx;
+again2:
+		idx = __RANDOM_GFI_IDX(info);
+		for (i = 0; i < info->groups - info->num_already_full; i++) {	
+			gfi = info->gfi[idx];
 
 			if (GFI_FREE(gfi) >= *cnt) {
 				spfs_debug(sbi->s_sb,
@@ -292,8 +345,18 @@ again:
 				found = true;
 				break;
 			}
-			if (!found)
+
+			if (idx == info->groups - 1) 
+				idx = info->num_already_full;
+			else 
+				idx++;
+		}
+		if (!found) {
+			if (S_OPTION(sbi)->demotion) {
+				goto again2;
+			} else {
 				goto out;
+			}
 		}
 	} else
 		goto out;
@@ -304,7 +367,7 @@ group_lock_done:
 		spfs_debug(sbi->s_sb, "%s: GFI(0x%llx, %lu) has no blocks for "
 				"%u in phase %d. do again", __func__, (u64) gfi,
 				GFI_START(gfi), *cnt, phase);
-		if (*cnt != 1 && (no_gfi || phase == 1))
+		if (!contiguous && *cnt != 1 && (no_gfi || phase == 1))
 			*cnt >>= 1;
 		if (no_gfi)
 			goto group_lock_done;
@@ -318,10 +381,11 @@ group_lock_done:
 			gfi->next_start, *cnt, 0, 0);
 	if (start >= GFI_NR(gfi)) {
 		gfi->next_start = 0;
-		pr_err("%s: GFI(0x%llx, %lu) has no contiguous blocks for %u in"
+		spfs_debug(sbi->s_sb, "%s: GFI(0x%llx, %lu)"
+				" has no contiguous blocks for %u in"
 				" phase %d.. do again", __func__, (u64) gfi,
 				GFI_START(gfi), *cnt, phase);
-		if (*cnt != 1 && (no_gfi || phase == 1))
+		if (!contiguous && *cnt != 1 && (no_gfi || phase == 1))
 			*cnt >>= 1;
 		if (no_gfi)
 			goto group_lock_done;

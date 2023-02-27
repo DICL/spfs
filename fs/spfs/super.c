@@ -10,12 +10,11 @@
 #include "profiler.h"
 #include "stats.h"
 
-
 extern const struct dentry_operations spfs_dops;
 extern const struct xattr_handler *spfs_xattr_handlers[];
 
 extern int spfs_parse_options(struct spfs_sb_info *, char *, bool);
-extern int spfs_truncate(struct inode *);
+extern int spfs_truncate(struct inode *, bool);
 
 
 static struct kmem_cache *spfs_inode_info_cachep;
@@ -153,6 +152,28 @@ again:
 	for (i = 0; i < INODE_LIST_COUNT; i++)
 		spin_lock_init(&sbi->s_inode_list_lock[i]);
 
+	if (IS_OP_MODE_TIERING(sbi) && S_OPTION(sbi)->demotion) {
+		rc = spfs_alloc_migr_lists(sbi);
+		if (rc) {
+			spfs_msg(sb, KERN_ERR, "can't alloc inode migr list");
+			goto out;
+		}
+
+		rc = spfs_start_usage_thread(sbi);
+		if (rc)
+			goto out;
+
+		rc = spfs_start_bm_thread(sbi);
+		if (rc)
+			goto out;
+		/* 
+		 * alpha 0 is just update sync factor as SF_HIGH 
+		 * => no hard limit demotion 
+		 */
+		if (S_OPTION(sbi)->sf_alp_perc)
+			sbi->sf_rd_thld = spfs_calc_sf_rd_thld(sbi);
+	}
+
 	/* XXX: should rehash? */
 	sb->s_root = spfs_d_make_root(sbi, inode, &lower_path);
 	if (!sb->s_root) {
@@ -256,7 +277,27 @@ static struct inode *spfs_alloc_inode(struct super_block *sb)
 	rwlock_init(&info->i_extent_lock);
 
 	info->i_profiler = NULL;
+	if (IS_OP_MODE_TIERING(SB_INFO(sb))) {
+		/* TODO: use own slub */
+		info->i_profiler =
+			kzalloc(sizeof(struct spfs_profiler), GFP_ATOMIC);
+		if (!I_PROFILER(&info->vfs_inode)) {
+			kmem_cache_free(spfs_inode_info_cachep, info);
+			info = NULL;
+			goto out;
+		}
+		spin_lock_init(&I_PROFILER(&info->vfs_inode)->lock);
+#ifdef CONFIG_SPFS_BW_PROFILER
+		I_PROFILER(&info->vfs_inode)->created_when = jiffies;
+#endif
+	}
+
 	info->i_file_doing_rw = NULL;
+
+	info->migr_info = NULL;
+	spin_lock_init(&info->migr_lock);
+	atomic_set(&info->sf_rd_cnt, 0);
+	atomic_set(&info->wq_doing, 0);
 out:
 	return info ? &info->vfs_inode : NULL;
 }
@@ -289,9 +330,9 @@ static void spfs_evict_inode(struct inode *inode)
 	struct spfs_inode_info *info = I_INFO(inode);
 	bool tiered = IS_TIERED_INODE(inode);
 
-	/* BP inode */
+	/* BP inode: pm inode may be suspended => may have lower_inode */
 	if (info->lower_inode && !tiered) {
-		BUG_ON(info->raw_inode);
+		BUG_ON(info->raw_inode); 
 		kfree(info->i_profiler); // TODO: sync on where??? xattr?
 		info->i_profiler = NULL;
 		clear_inode(inode);
@@ -306,7 +347,7 @@ static void spfs_evict_inode(struct inode *inode)
 	/* deleted inode */
 	inode->i_size = 0;
 	if (inode_get_bytes(inode))
-		spfs_truncate(inode);
+		spfs_truncate(inode, false);
 
 	/* Free inode block.
 	 * When deleting file, only hash key and value is deleted.
@@ -319,6 +360,7 @@ static void spfs_evict_inode(struct inode *inode)
 	spfs_del_inode_list(inode);
 
 	spfs_commit_block_deallocation(SB_INFO(inode->i_sb), inode->i_ino, 1);
+    
 no_delete:
 	spfs_truncate_extent_info(inode, 0);
 	clear_inode(inode);
@@ -390,6 +432,13 @@ static int spfs_show_options(struct seq_file *seq, struct dentry *root)
 		if (opts->migr_dir_boost)
 			seq_printf(seq, ",migr_dir_boost");
 #endif
+		seq_printf(seq, ",demotion=%d,demotion_hard_limit=%d" 
+				",demotion_sync_write=%d", 
+				opts->demotion, opts->demotion_hard_limit, 
+				opts->demotion_sync_write);
+		seq_printf(seq, ",sf_alp_perc=%d", opts->sf_alp_perc);
+		seq_printf(seq, ",migr_test_num_trigger=%d", 
+				opts->migr_test_num_trigger);
 	} else if (IS_OP_MODE_PM(sbi))
 		seq_printf(seq, ",mode=pm");
 	else

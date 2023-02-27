@@ -36,6 +36,12 @@ enum {
 	Opt_cceh_no_fast_path,
 
 	Opt_no_gfi,
+	
+	Opt_demotion,
+	Opt_demotion_hard_limit,
+	Opt_demotion_sync_write,
+	Opt_sf_alp_perc,
+	Opt_migr_test_num_trigger,
 
 	Opt_err,
 };
@@ -66,6 +72,13 @@ static const match_table_t tokens = {
 	{Opt_cceh_no_fast_path,		"cceh_no_fast_path"},
 
 	{Opt_no_gfi, "no_gfi"},
+	
+	{Opt_demotion, "demotion=%d"},
+	{Opt_demotion_hard_limit, "demotion_hard_limit=%d"},
+	{Opt_demotion_sync_write, "demotion_sync_write=%d"},
+	{Opt_sf_alp_perc, "sf_alp_perc=%d"},
+	{Opt_migr_test_num_trigger, "migr_test_num_trigger=%d"},
+	
 	{Opt_err, NULL},
 };
 
@@ -97,6 +110,12 @@ void spfs_init_default_options(struct spfs_sb_info *sbi)
 	opts->cceh_fast_path = true;
 
 	opts->no_gfi = false;
+	
+	opts->demotion = true;
+	opts->demotion_hard_limit = true;
+	opts->demotion_sync_write = true;
+	opts->sf_alp_perc = 5;
+	opts->migr_test_num_trigger = 0;
 }
 
 int spfs_parse_options(struct spfs_sb_info *sbi, char *options,
@@ -235,6 +254,27 @@ int spfs_parse_options(struct spfs_sb_info *sbi, char *options,
 		case Opt_no_gfi:
 			opts->no_gfi = true;
 			break;
+		case Opt_demotion:
+			ret = match_int(&args[0], &opts->demotion);
+			if (!opts->demotion)
+				opts->demotion_hard_limit = 0;
+			break;
+		case Opt_demotion_hard_limit:
+			ret = match_int(&args[0], &opts->demotion_hard_limit);
+			if (!opts->demotion)
+				opts->demotion_hard_limit = 0;
+			break;
+		case Opt_demotion_sync_write:
+			ret = match_int(&args[0], &opts->demotion_sync_write);
+			break;
+		case Opt_sf_alp_perc:
+			ret = match_int(&args[0], &opts->sf_alp_perc);
+			if (!opts->sf_alp_perc)
+				opts->demotion_hard_limit = 0;
+			break;
+		case Opt_migr_test_num_trigger:
+			ret = match_int(&args[0], &opts->migr_test_num_trigger);
+			break;
 		}
 
 		if (ret) {
@@ -349,11 +389,26 @@ error:
 	return ERR_PTR(rc);
 }
 
+static void kill_spfs_super(struct super_block *sb)
+{
+	if (sb->s_root) {
+		struct spfs_sb_info *sbi = SB_INFO(sb);
+
+		if (IS_OP_MODE_TIERING(sbi) && S_OPTION(sbi)->demotion) {
+			spfs_stop_usage_thread(sbi);
+			spfs_stop_bm_thread(sbi);
+			
+			spfs_destroy_migr_lists(sbi);
+		}
+	}
+	kill_block_super(sb);
+}
+
 static struct file_system_type spfs_fs_type = {
 	.owner		= THIS_MODULE,
 	.name		= "spfs",
 	.mount		= spfs_mount,
-	.kill_sb	= kill_block_super,
+	.kill_sb	= kill_spfs_super,
 };
 MODULE_ALIAS_FS("spfs");
 

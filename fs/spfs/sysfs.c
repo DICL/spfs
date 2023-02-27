@@ -44,17 +44,29 @@ int spfs_register_sysfs(struct super_block *sb)
 		COUNTER_INIT(&stats_replace_counter);
 		COUNTER_INIT(&stats_cow_counter);
 
+		COUNTER_INIT(&stats_succ_on_demoted);
+		COUNTER_INIT(&stats_succ_amounts_on_demoted);
+		COUNTER_INIT(&stats_susp_on_demoted);
+		COUNTER_INIT(&stats_susp_amounts_on_demoted);
+		COUNTER_INIT(&stats_full_mapped_on_demoted);
+		COUNTER_INIT(&stats_partial_mapped_on_demoted);
+		COUNTER_INIT(&stats_nothing_mapped_on_demoted);
+		
 		proc_create_single_data("extent_count", S_IRUGO, sbi->s_proc,
 				spfs_seq_extent_count_show, sb);
 		proc_create_single_data("profiler", S_IRUGO, sbi->s_proc,
 				spfs_seq_profiler_show, sb);
 		proc_create_single_data("logging", S_IRUGO, sbi->s_proc,
 				spfs_seq_logging_count_show, sb);
+		proc_create_single_data("demotion", S_IRUGO, sbi->s_proc,
+				spfs_seq_demotion_show, sb);
 #endif
 		proc_create_single_data("extent_CCEH", S_IRUGO, sbi->s_proc,
 				spfs_seq_extent_cceh_show, sb);
 		proc_create_single_data("memory_barrier", S_IRUGO, sbi->s_proc,
 				spfs_seq_memory_barrier_show, sb);
+		proc_create_single_data("migr_lists", S_IRUGO, sbi->s_proc,
+				spfs_seq_migr_lists_show, sb);
 	}
 
 	return 0;
@@ -76,6 +88,14 @@ void spfs_unregister_sysfs(struct super_block *sb)
 		percpu_counter_destroy(&stats_undo_counter);
 		percpu_counter_destroy(&stats_replace_counter);
 		percpu_counter_destroy(&stats_cow_counter);
+
+		percpu_counter_destroy(&stats_succ_on_demoted);
+		percpu_counter_destroy(&stats_succ_amounts_on_demoted);
+		percpu_counter_destroy(&stats_susp_on_demoted);
+		percpu_counter_destroy(&stats_susp_amounts_on_demoted);
+		percpu_counter_destroy(&stats_full_mapped_on_demoted);
+		percpu_counter_destroy(&stats_partial_mapped_on_demoted);
+		percpu_counter_destroy(&stats_nothing_mapped_on_demoted);
 #endif
 		remove_proc_subtree(sb->s_id, spfs_proc_root);
 	}

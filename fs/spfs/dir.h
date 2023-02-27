@@ -1,6 +1,8 @@
 #ifndef __DIR_H__
 #define __DIR_H__
 
+#include "journal.h"
+
 //#define RENAME_DEBUG
 #ifdef RENAME_DEBUG
 #define rename_msg(fmt, ...)						\

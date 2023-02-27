@@ -367,7 +367,7 @@ static int __spfs_create(struct inode *dir, struct dentry *dentry, umode_t mode,
 	set_inode_flag(inode, INODE_PM);
 	inode->i_generation = prandom_u32();
 	inode->i_ino = prefetch[0];
-
+	
 	ret = insert_inode_locked4(inode, inode->i_ino, spfs_inode_test,
 			(void *) (uintptr_t) inode->i_ino);
 	if (unlikely(ret)) {
@@ -601,6 +601,13 @@ static int spfs_unlink(struct inode *dir, struct dentry *dentry)
 	ijournal_log_inode_count(inode);
 
 	d_drop(dentry);
+
+	/* XXX: no demotion opt, migr_info must be NULL */
+	if (is_inode_flag_set(inode, INODE_TIERED) && 
+			I_INFO(inode)->migr_info) {
+		BUG_ON(!S_OPTION(sbi)->demotion);
+		spfs_remove_migr_list(inode);
+	}
 out:
 	return ret;
 }
@@ -941,8 +948,16 @@ rule_done:
 			BUG_ON(SPFS_DE(new_dentry));
 		}
 	}
-	return ret;
 
+	/* TODO: handle rename */
+	//if (IS_TIERED_INODE(source))
+	//	spfs_remove_migr_list(source);
+
+	//if (target && IS_TIERED_INODE(target) && 
+	//		spfs_inode_is_full_extents_mapped(target))
+	//	spfs_add_migr_list(target, new_dentry, true);
+
+	return ret;
 }
 
 const struct inode_operations spfs_dir_iops = {

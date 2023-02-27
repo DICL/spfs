@@ -12,6 +12,7 @@
 #include <linux/seq_file.h>
 #include <linux/percpu_counter.h>
 #include <linux/file.h>
+#include <linux/kthread.h>
 
 #include "persist.h"
 
@@ -159,7 +160,9 @@ struct spfs_inode {
 	__le32			i_atime;
 	__le32			i_mtime;			/* 40 */
 	__le32			i_ctime;
-	/* 23 entries for 8B */
+	__le32          	i_sync_factor;
+	__le32          	padding;
+	/* 22 entries for 8B */
 	__le64			i_journal[0];
 } __attribute((__packed__));
 
@@ -197,7 +200,6 @@ struct spfs_mount_options {
 	unsigned int	prof_write_bandwidth;
 	unsigned int	prof_fsync_bandwidth;
 #endif
-
 	bool		stats_exclude_init;
 
 #define DEF_MAX_EXTENT_LEN	(65536)
@@ -210,10 +212,23 @@ struct spfs_mount_options {
 	bool		cceh_fast_path;
 
 	bool		no_gfi;
+	
+	int		demotion;
+	int		demotion_hard_limit;
+	int		demotion_sync_write;
+	int		sf_alp_perc;
+	int		migr_test_num_trigger;
 };
 
 struct spfs_data_info {
 	struct spfs_cceh_info	*hash;
+};
+
+// Background migration thread
+struct spfs_kthread {
+	struct task_struct *spfs_task;
+	int index;
+	wait_queue_head_t wait_queue_head;
 };
 
 struct spfs_sb_info {
@@ -236,6 +251,11 @@ struct spfs_sb_info {
 	spinlock_t			s_readdir_index_lock;
 	struct radix_tree_root		s_readdir_index;
 #endif
+	struct list_head *migr_lists;
+	struct mutex *ml_locks; /* using mutex due to bg migration */
+	struct spfs_kthread *bm_thread;
+	struct spfs_kthread *usage_thread;
+	int sf_rd_thld; 
 };
 
 #define S_OPTION(sbi)		(&(sbi)->s_options)
@@ -333,6 +353,12 @@ static inline bool test_dir_eof(struct file *file)
 	return false;
 }
 
+struct spfs_migr_info {
+	struct list_head migr_list;
+	struct inode *inode;
+	struct dentry *dentry;
+};
+
 /*
  * If it's on PM, inode.i_ino means block number where it's located.
  */
@@ -350,6 +376,11 @@ struct spfs_inode_info {
 	void			*i_profiler;	/* for DISK mode inode */
 
 	struct file		*i_file_doing_rw;
+
+	struct spfs_migr_info 	*migr_info; /* for fg. sync factor detection */
+	spinlock_t		migr_lock;
+	atomic_t		sf_rd_cnt; /* for delayed sync factor calc. */
+	atomic_t		wq_doing;
 };
 
 #ifdef CONFIG_SPFS_READDIR_RADIX_TREE
@@ -373,6 +404,12 @@ struct spfs_dentry_info {
 #endif
 };
 
+struct spfs_work_data {
+	struct work_struct work;
+	struct inode *inode;
+	struct dentry *dentry;
+};
+
 static inline struct spfs_sb_info *SB_INFO(struct super_block *sb)
 {
 	return sb->s_fs_info;
@@ -384,6 +421,11 @@ static inline struct spfs_inode_info *I_INFO(struct inode *inode)
 }
 
 #define I_RAW(inode)	(I_INFO((inode))->raw_inode)
+
+static inline struct spfs_migr_info *I_MIGR(struct inode *inode)
+{
+	return I_INFO(inode)->migr_info;
+}
 
 static inline struct inode *spfs_inode_to_lower(struct inode *inode)
 {
@@ -499,6 +541,16 @@ extern const struct xattr_handler spfs_xattr_bp_handler;
 extern ssize_t spfs_migr_fill_extent(struct inode *, void *, size_t, loff_t *);
 extern int spfs_prepare_upward_migration(struct dentry *);
 extern int spfs_migrate_extent_map(struct inode *inode);
+extern void spfs_add_migr_list(struct inode *, struct dentry *);
+extern void spfs_calibrate_migr_list(struct inode *, unsigned int);
+extern void spfs_remove_migr_list(struct inode *);
+extern int spfs_alloc_migr_lists(struct spfs_sb_info *);
+extern int spfs_destroy_migr_lists(struct spfs_sb_info *); 
+extern int spfs_start_usage_thread(struct spfs_sb_info *);
+extern void spfs_stop_usage_thread(struct spfs_sb_info *);
+extern int spfs_start_bm_thread(struct spfs_sb_info *);
+extern void spfs_stop_bm_thread(struct spfs_sb_info *);
+extern int spfs_seq_migr_lists_show(struct seq_file *, void *);
 
 /* namei.c */
 extern int spfs_del_dir(struct dentry *);
@@ -583,6 +635,8 @@ enum {
 	/* PM */
 	INODE_NEED_RECOVERY,
 	INODE_TRUNCATING,
+
+	INODE_SUSPENDED,
 };
 
 static inline void set_inode_flag(struct inode *inode, int flag)
@@ -604,6 +658,23 @@ static inline bool spfs_should_bypass(struct inode *inode)
 {
 	return !(is_inode_flag_set(inode, INODE_PM) ||
 			is_inode_flag_set(inode, INODE_TIERED));
+}
+
+/* inode state change: tiered => bypass by demotion */
+static inline bool __spfs_revalidate_tiered(struct inode *inode)
+{
+	return !is_inode_flag_set(inode, INODE_TIERED);
+}
+
+static inline bool spfs_revalidate_tiered(struct inode *inode, bool is_read)
+{
+	if (is_inode_flag_set(inode, INODE_PM))
+		return false;
+	/* Inevitably, we have no choice but to wait for PM data to be freed */
+	if (is_read)
+		while (spin_is_locked(&I_INFO(inode)->migr_lock)) { }
+
+	return __spfs_revalidate_tiered(inode);
 }
 
 static inline void init_blist_head_nt(struct spfs_sb_info *sbi,
@@ -759,12 +830,14 @@ static inline void blist_del_init(struct spfs_sb_info *sbi,
 /* ioctl */
 #define SPFS_IOC_SET_USE_PM	_IO('=', 0)
 #define SPFS_IOC_SET_USE_DISK	_IO('=', 1)
+#define SPFS_IOC_SET_UP_MIGR	_IO('=', 2)
+#define SPFS_IOC_SET_DOWN_MIGR	_IO('=', 3)
 
 #define SPFS_XATTR_SET_USE_PM	(XATTR_USER_PREFIX "SPFS.boost")
 
 
 #define CREATE_TRACE_POINTS
 
-#endif
+#endif // _SPFS_H_
 
 #include "cceh.h"
