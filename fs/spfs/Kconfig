@@ -1,0 +1,46 @@
+config SPFS
+	tristate "Stackable PM File System"
+	depends on FS_DAX
+
+config SPFS_BLOCK_BITS
+	int "The number of bits for block size"
+	depends on SPFS
+	range 8 12
+	default 8
+
+config SPFS_UNIFIED_PCL
+	bool "Unified Partial Cluster List instead of segregated list"
+	depends on SPFS
+
+config SPFS_DEBUG
+	bool "Debugging support"
+	depends on SPFS
+
+config SPFS_DEBUG_LEVEL
+	int "The degree of verbose of the debugging log"
+	depends on SPFS_DEBUG
+	range 0 3
+	default 0
+	help
+	  The larger the number, the more verbose the log is printed.
+
+config SPFS_READDIR_RADIX_TREE
+	bool "Readdir support by hybrid DRAM index"
+	depends on SPFS
+	default y
+
+config SPFS_STATS
+	bool "SPFS status information"
+	depends on SPFS
+	help
+	  TODO
+
+config SPFS_1SEC_PROFILER
+	bool "SPFS 1sec profiler"
+	depends on SPFS
+	default n
+
+config SPFS_BW_PROFILER
+	bool "SPFS bandwidth profiler"
+	depends on SPFS
+	default n
