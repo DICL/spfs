@@ -1,8 +1,6 @@
 # SPFS (Stackable Persistent Memory File System)
----
 
 ## Introduction
----
 
 SPFS is a stackable file system for Persistent Memory which can be stacked on any block device-optimized file system. By layering a NVMM-optimized stackable file system on a disk-optimized file system, SPFS avoids reinventing a file system for disks while providing a combined view of two file systems and leveraging the strengths of both layers. SPFS improves I/O performance as it absorbs frequent synchronous small writes on PM while also exploiting the VFS cache of the underlying disk-optimized file system for non-synchronous writes. As a stackable file system, SPFS is lightweight in that it manages only NVMM and does not manage disks nor the VFS cache. SPFS manages all file system metadata in simple but highly efficient dynamic hash tables. Our extensive performance study shows that SPFS effectively improves I/O performance of the lower file system by up to 7.1×.
 
@@ -20,7 +18,6 @@ We encourage you to cite our paper at FAST 2023 as follows:
 ```
 
 ## Compiling and Installing SPFS
----
 
 Please download the latest version of `spfs` from Github:
 
@@ -69,7 +66,6 @@ license:        GPL
 ```
 
 ## Using SPFS
----
 
 **Stacked Mode**
 Mounting disk file system 
